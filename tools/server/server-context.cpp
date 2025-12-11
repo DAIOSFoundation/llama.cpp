@@ -14,7 +14,8 @@
 #include "mtmd-helper.h"
 
 #ifdef GGML_USE_METAL
-#include "ggml-metal.h"
+#include "../ggml/include/ggml-metal.h"
+#include "../ggml/src/ggml-metal/ggml-metal-device.h"
 #endif
 
 #include <cstddef>
