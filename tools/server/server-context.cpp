@@ -98,6 +98,7 @@ struct server_slot {
     int32_t n_prompt_tokens_processed = 0;
 
     size_t last_nl_pos = 0;
+    int32_t sentence_count = 0; // 문장 개수 카운트 (폭주 방지용)
 
     std::string  generated_text;
     llama_tokens generated_tokens;
@@ -179,6 +180,7 @@ struct server_slot {
         n_prompt_tokens_cache = 0;
 
         last_nl_pos    = 0;
+        sentence_count = 0;
         generated_text = "";
         has_new_line   = false;
         truncated      = false;
@@ -1094,6 +1096,30 @@ struct server_context_impl {
             slot.generated_tokens.push_back(result.tok);
         }
         slot.has_next_token = true;
+
+        // [Force Stop Logic] 문장 수 제한 및 폭주 감지
+        const int MAX_SENTENCES = 5;
+        // 간단한 문장 종결 감지 (., !, ?)
+        for (char c : token_str) {
+            if (c == '.' || c == '!' || c == '?') {
+                slot.sentence_count++;
+            }
+        }
+        if (slot.sentence_count >= MAX_SENTENCES) {
+            slot.stop           = STOP_TYPE_LIMIT;
+            slot.has_next_token = false;
+            // 마지막 문장 부호 이후 텍스트 제거 (깔끔하게 종료)
+            // (선택 사항: 원한다면 구현 가능하지만 일단 멈추는 게 우선)
+            SLT_DBG(slot, "stopped by sentence limit (%d sentences)\n", slot.sentence_count);
+        }
+        // 폭주 패턴 감지
+        if (token_str.find("~~~~") != std::string::npos || 
+            token_str.find("!!!!") != std::string::npos ||
+            token_str.find("ㅋㅋㅋㅋ") != std::string::npos) {
+            slot.stop           = STOP_TYPE_LIMIT;
+            slot.has_next_token = false;
+            SLT_DBG(slot, "%s", "stopped by runaway pattern detection\n");
+        }
 
         // check if there is incomplete UTF-8 character at the end
         bool incomplete = validate_utf8(slot.generated_text) < slot.generated_text.size();
