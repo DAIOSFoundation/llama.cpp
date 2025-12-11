@@ -13,6 +13,10 @@
 #include "mtmd.h"
 #include "mtmd-helper.h"
 
+#ifdef GGML_USE_METAL
+#include "ggml-metal.h"
+#endif
+
 #include <cstddef>
 #include <cinttypes>
 #include <memory>
@@ -1629,6 +1633,21 @@ struct server_context_impl {
                     res->n_decode_total          = metrics.n_decode_total;
                     res->n_busy_slots_total      = metrics.n_busy_slots_total;
 
+                    // Get VRAM information from Metal API (macOS only)
+#ifdef GGML_USE_METAL
+                    {
+                        ggml_metal_device_t metal_dev = ggml_metal_device_get();
+                        if (metal_dev != nullptr) {
+                            size_t vram_free = 0;
+                            size_t vram_total = 0;
+                            ggml_metal_device_get_memory(metal_dev, &vram_free, &vram_total);
+                            res->vram_total = vram_total;
+                            res->vram_free  = vram_free;
+                            res->vram_used  = vram_total - vram_free;
+                        }
+                    }
+#endif
+
                     if (task.metrics_reset_bucket) {
                         metrics.reset_bucket();
                     }
@@ -3022,6 +3041,18 @@ void server_routes::init_routes() {
                     {"name",  "requests_deferred"},
                     {"help",  "Number of requests deferred."},
                     {"value",  (uint64_t) res_task->n_tasks_deferred}
+            },{
+                    {"name",  "vram_total_bytes"},
+                    {"help",  "Total VRAM in bytes."},
+                    {"value",  (uint64_t) res_task->vram_total}
+            },{
+                    {"name",  "vram_used_bytes"},
+                    {"help",  "Used VRAM in bytes."},
+                    {"value",  (uint64_t) res_task->vram_used}
+            },{
+                    {"name",  "vram_free_bytes"},
+                    {"help",  "Free VRAM in bytes."},
+                    {"value",  (uint64_t) res_task->vram_free}
             }}}
         };
 
