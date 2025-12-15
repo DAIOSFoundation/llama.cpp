@@ -2,6 +2,9 @@
 
 #include "ggml.h" // for ggml_log_level
 
+#include <cstdint>
+#include <string>
+
 #define LOG_CLR_TO_EOL  "\033[K\r"
 #define LOG_COL_DEFAULT "\033[0m"
 #define LOG_COL_BOLD    "\033[1m"
@@ -85,6 +88,19 @@ void common_log_set_colors    (struct common_log * log, log_colors colors); // n
 void common_log_set_prefix    (struct common_log * log, bool prefix);       // whether to output prefix to each log
 void common_log_set_timestamps(struct common_log * log, bool timestamps);   // whether to output timestamps in the prefix
 void common_log_flush         (struct common_log * log);                    // flush all pending log messages
+
+// --- Log streaming (in-memory ring buffer) ---
+// Used by server SSE endpoints to provide live logs to clients.
+struct common_log_stream_record {
+    uint64_t seq = 0;
+    int64_t  ts_us = 0;
+    int      level = 0; // one of GGML_LOG_LEVEL_*
+    std::string text;
+};
+
+// Wait for the next record with seq > after_seq.
+// Returns true if a record is returned, false on timeout.
+bool common_log_stream_wait_next(uint64_t after_seq, int timeout_ms, common_log_stream_record & out);
 
 // helper macros for logging
 // use these to avoid computing log arguments if the verbosity of the log is higher than the threshold

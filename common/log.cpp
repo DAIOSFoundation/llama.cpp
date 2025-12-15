@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <mutex>
 #include <sstream>
 #include <thread>
@@ -29,6 +30,55 @@ void common_log_set_verbosity_thold(int verbosity) {
 
 static int64_t t_us() {
     return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+// --- In-memory log stream ring buffer ---
+static std::mutex g_stream_mtx;
+static std::condition_variable g_stream_cv;
+static std::deque<common_log_stream_record> g_stream;
+static uint64_t g_stream_seq = 0;
+static const size_t g_stream_max = 2000;
+
+static void stream_push(enum ggml_log_level level, const char * text, int64_t ts_us_val) {
+    if (!text) return;
+    common_log_stream_record rec;
+    rec.seq = ++g_stream_seq;
+    rec.ts_us = ts_us_val;
+    rec.level = (int) level;
+    rec.text = text;
+
+    {
+        std::lock_guard<std::mutex> lk(g_stream_mtx);
+        g_stream.push_back(std::move(rec));
+        while (g_stream.size() > g_stream_max) {
+            g_stream.pop_front();
+        }
+    }
+    g_stream_cv.notify_all();
+}
+
+bool common_log_stream_wait_next(uint64_t after_seq, int timeout_ms, common_log_stream_record & out) {
+    std::unique_lock<std::mutex> lk(g_stream_mtx);
+    auto has_next = [&]() -> bool {
+        if (g_stream.empty()) return false;
+        return g_stream.back().seq > after_seq;
+    };
+
+    if (!has_next()) {
+        if (timeout_ms <= 0) return false;
+        if (g_stream_cv.wait_for(lk, std::chrono::milliseconds(timeout_ms), has_next) == false) {
+            return false;
+        }
+    }
+
+    // find first record with seq > after_seq
+    for (const auto & rec : g_stream) {
+        if (rec.seq > after_seq) {
+            out = rec;
+            return true;
+        }
+    }
+    return false;
 }
 
 // colors
@@ -170,6 +220,9 @@ private:
 
 public:
     void add(enum ggml_log_level level, const char * fmt, va_list args) {
+        std::string msg_copy;
+        int64_t ts_copy = 0;
+
         std::lock_guard<std::mutex> lock(mtx);
 
         if (!running) {
@@ -212,6 +265,9 @@ public:
             va_end(args_copy);
         }
 
+        msg_copy = entry.msg.data();
+        ts_copy = timestamps ? (t_us() - t_start) : 0;
+
         entry.level = level;
         entry.prefix = prefix;
         entry.timestamp = 0;
@@ -245,6 +301,9 @@ public:
         }
 
         cv.notify_one();
+
+        // Push to stream ring buffer (outside of worker thread)
+        stream_push(level, msg_copy.c_str(), ts_copy);
     }
 
     void resume() {

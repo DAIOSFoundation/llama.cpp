@@ -164,6 +164,7 @@ int main(int argc, char ** argv, char ** envp) {
     ctx_http.post("/auth/setup",          ex_wrapper(routes.post_auth_setup));
     ctx_http.post("/auth/login",          ex_wrapper(routes.post_auth_login));
     ctx_http.post("/auth/logout",         ex_wrapper(routes.post_auth_logout));
+    ctx_http.get ("/logs/stream",         ex_wrapper(routes.get_logs_stream));
     ctx_http.post("/props",               ex_wrapper(routes.post_props));
     ctx_http.post("/api/show",            ex_wrapper(routes.get_api_show));
     ctx_http.get ("/models",              ex_wrapper(routes.get_models)); // public endpoint (no API key check)

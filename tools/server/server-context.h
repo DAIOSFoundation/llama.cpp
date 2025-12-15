@@ -87,6 +87,8 @@ struct server_routes {
     server_http_context::handler_t post_auth_setup;
     server_http_context::handler_t post_auth_login;
     server_http_context::handler_t post_auth_logout;
+    // live logs (SSE)
+    server_http_context::handler_t get_logs_stream;
 private:
     // TODO: move these outside of server_routes?
     std::unique_ptr<server_res_generator> handle_slots_save(const server_http_req & req, int id_slot);

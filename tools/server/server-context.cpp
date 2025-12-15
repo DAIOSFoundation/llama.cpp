@@ -3784,6 +3784,94 @@ void server_routes::init_routes() {
         return res;
     };
 
+    // --- Live logs (SSE) ---
+    // Send log lines captured by common_log_add() via /logs/stream.
+    this->get_logs_stream = [this, is_authenticated](const server_http_req & req) {
+        auto res = std::make_unique<server_http_res>();
+
+        // If auth is initialized, require session token
+        llm_server_auth::auth_record rec;
+        const bool initialized = llm_server_auth::load_auth_file(params.auth_file, rec);
+        if (initialized && !is_authenticated(req)) {
+            res->status = 401;
+            res->content_type = "application/json; charset=utf-8";
+            res->data = safe_json_to_str({{"error", {{"message", "Unauthorized"}, {"type", "authentication_error"}, {"code", 401}}}});
+            return res;
+        }
+
+        int interval_ms = 250;
+        try {
+            const std::string v = req.get_param("interval_ms");
+            if (!v.empty()) {
+                interval_ms = std::stoi(v);
+            }
+        } catch (...) {
+            interval_ms = 250;
+        }
+        interval_ms = std::max(100, std::min(2000, interval_ms));
+
+        auto should_stop = req.should_stop;
+
+        res->status = 200;
+        res->content_type = "text/event-stream";
+        res->headers["Cache-Control"] = "no-cache";
+        res->headers["Connection"] = "keep-alive";
+
+        struct state_t {
+            bool first = true;
+            uint64_t cursor = 0;
+            int64_t last_ping_ms = 0;
+        };
+        auto st = std::make_shared<state_t>();
+
+        res->next = [st, should_stop, interval_ms](std::string & out) -> bool {
+            if (should_stop && should_stop()) {
+                return false;
+            }
+
+            if (st->first) {
+                st->first = false;
+                out = "retry: 1000\n\n";
+                st->last_ping_ms = ggml_time_ms();
+                return true;
+            }
+
+            common_log_stream_record rec;
+            if (common_log_stream_wait_next(st->cursor, interval_ms, rec)) {
+                st->cursor = rec.seq;
+
+                // strip trailing newlines to keep UI neat
+                std::string text = rec.text;
+                while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) {
+                    text.pop_back();
+                }
+
+                json payload = {
+                    {"seq", rec.seq},
+                    {"ts_us", (uint64_t) std::max<int64_t>(0, rec.ts_us)},
+                    {"level", rec.level},
+                    {"text", text},
+                };
+                out = "event: log\ndata: " + safe_json_to_str(payload) + "\n\n";
+                return true;
+            }
+
+            // keepalive ping every ~5s
+            const int64_t now = ggml_time_ms();
+            if (st->last_ping_ms == 0) st->last_ping_ms = now;
+            if (now - st->last_ping_ms >= 5000) {
+                st->last_ping_ms = now;
+                out = ": ping\n\n";
+                return true;
+            }
+
+            out.clear();
+            return true;
+        };
+
+        return res;
+    };
+
     this->get_slots = [this](const server_http_req & req) {
         auto res = std::make_unique<server_res_generator>(ctx_server);
         if (!params.endpoint_slots) {
