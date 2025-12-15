@@ -3300,18 +3300,73 @@ void server_routes::init_routes() {
             }
 
             json body = json::parse(req.body);
-            if (!body.contains("path") || !body["path"].is_string()) {
-                res->error(format_error_response("Missing `path`", ERROR_TYPE_INVALID_REQUEST));
+            std::string input;
+            if (body.contains("path") && body["path"].is_string()) {
+                input = body["path"].get<std::string>();
+            } else if (body.contains("model") && body["model"].is_string()) {
+                input = body["model"].get<std::string>();
+            } else {
+                res->error(format_error_response("Missing `path` (or `model`)", ERROR_TYPE_INVALID_REQUEST));
                 return res;
             }
 
-            const std::string file_path = body["path"].get<std::string>();
-            if (file_path.empty()) {
-                res->error(format_error_response("Empty `path`", ERROR_TYPE_INVALID_REQUEST));
+            input = string_strip(input);
+            if (input.empty()) {
+                res->error(format_error_response("Empty `path` (or `model`)", ERROR_TYPE_INVALID_REQUEST));
                 return res;
             }
 
-            if (!std::filesystem::exists(file_path)) {
+            // Resolve:
+            // - if `input` exists as-is, use it
+            // - if it's a model id (no slashes), resolve within --models-dir (router mode)
+            // - if it's a relative path that doesn't exist, also try models-dir + relative path
+            std::string file_path = input;
+
+            const bool has_sep = input.find('/') != std::string::npos || input.find('\\') != std::string::npos;
+
+            auto try_path = [&](const std::filesystem::path & p) -> bool {
+                try {
+                    if (!p.empty() && std::filesystem::exists(p)) {
+                        file_path = p.string();
+                        return true;
+                    }
+                } catch (...) {
+                    // ignore
+                }
+                return false;
+            };
+
+            bool ok_resolve = try_path(std::filesystem::path(file_path));
+
+            if (!ok_resolve) {
+                // router mode convenience: allow `model` id to be used directly
+                const std::filesystem::path models_dir = params.models_dir.empty()
+                    ? std::filesystem::path()
+                    : std::filesystem::path(params.models_dir);
+
+                if (!models_dir.empty()) {
+                    if (!has_sep) {
+                        // treat input as model id
+                        std::string id = input;
+                        if (string_ends_with(id, ".gguf")) {
+                            id = id.substr(0, id.size() - 5);
+                        }
+                        ok_resolve = try_path(models_dir / (id + ".gguf"));
+                        if (!ok_resolve) {
+                            // also allow input already includes extension
+                            ok_resolve = try_path(models_dir / input);
+                        }
+                    } else {
+                        // relative path fallback
+                        const std::filesystem::path p_in(input);
+                        if (!p_in.is_absolute()) {
+                            ok_resolve = try_path(models_dir / p_in);
+                        }
+                    }
+                }
+            }
+
+            if (!ok_resolve) {
                 res->ok({
                     {"ok", false},
                     {"error", "File not found"},
