@@ -179,6 +179,7 @@ int main(int argc, char ** argv, char ** envp) {
     ctx_http.post("/tokenize",            ex_wrapper(routes.post_tokenize));
     ctx_http.post("/detokenize",          ex_wrapper(routes.post_detokenize));
     ctx_http.post("/apply-template",      ex_wrapper(routes.post_apply_template));
+    ctx_http.post("/gguf-info",           ex_wrapper(routes.post_gguf_info));
     // LoRA adapters hotswap
     ctx_http.get ("/lora-adapters",       ex_wrapper(routes.get_lora_adapters));
     ctx_http.post("/lora-adapters",       ex_wrapper(routes.post_lora_adapters));

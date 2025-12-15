@@ -13,6 +13,8 @@
 #include "mtmd.h"
 #include "mtmd-helper.h"
 
+#include "../ggml/include/gguf.h"
+
 #ifdef GGML_USE_METAL
 #include "../ggml/include/ggml-metal.h"
 #include "../ggml/src/ggml-metal/ggml-metal-device.h"
@@ -2963,6 +2965,129 @@ void server_routes::init_routes() {
         auto res = std::make_unique<server_res_generator>(ctx_server);
         res->ok({{"status", "ok"}});
         return res;
+    };
+
+    this->post_gguf_info = [this](const server_http_req & req) {
+        auto res = std::make_unique<server_res_generator>(ctx_server);
+
+        try {
+            if (req.body.empty()) {
+                res->error(format_error_response("Missing request body", ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+
+            json body = json::parse(req.body);
+            if (!body.contains("path") || !body["path"].is_string()) {
+                res->error(format_error_response("Missing `path`", ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+
+            const std::string file_path = body["path"].get<std::string>();
+            if (file_path.empty()) {
+                res->error(format_error_response("Empty `path`", ERROR_TYPE_INVALID_REQUEST));
+                return res;
+            }
+
+            if (!std::filesystem::exists(file_path)) {
+                res->ok({
+                    {"ok", false},
+                    {"error", "File not found"},
+                });
+                return res;
+            }
+
+            // read GGUF metadata (no tensor data allocation)
+            ggml_context * ctx = nullptr;
+            gguf_init_params params_gguf = {
+                /* .no_alloc = */ true,
+                /* .ctx      = */ &ctx,
+            };
+
+            gguf_context * ctx_gguf = gguf_init_from_file(file_path.c_str(), params_gguf);
+            if (!ctx_gguf) {
+                if (ctx) {
+                    ggml_free(ctx);
+                }
+                res->ok({
+                    {"ok", false},
+                    {"error", "Not a GGUF file or failed to read GGUF metadata"},
+                });
+                return res;
+            }
+
+            const uint32_t gguf_version = gguf_get_version(ctx_gguf);
+
+            // general.file_type (numeric)
+            int64_t key_ftype = gguf_find_key(ctx_gguf, "general.file_type");
+            int32_t file_type_id = -1;
+            if (key_ftype != -1) {
+                const gguf_type t = gguf_get_kv_type(ctx_gguf, key_ftype);
+                if (t == GGUF_TYPE_UINT32) {
+                    file_type_id = (int32_t) gguf_get_val_u32(ctx_gguf, key_ftype);
+                } else if (t == GGUF_TYPE_INT32) {
+                    file_type_id = (int32_t) gguf_get_val_i32(ctx_gguf, key_ftype);
+                }
+            }
+
+            // tensor type histogram + Q/K/V first match
+            std::map<std::string, int> tensor_types;
+            json qkv = {{"q", nullptr}, {"k", nullptr}, {"v", nullptr}};
+
+            const auto to_lower = [](std::string s) {
+                for (char & c : s) c = (char) std::tolower((unsigned char) c);
+                return s;
+            };
+
+            const auto match_any = [](const std::string & hay, const std::initializer_list<const char *> & needles) {
+                for (auto n : needles) {
+                    if (hay.find(n) != std::string::npos) return true;
+                }
+                return false;
+            };
+
+            const int64_t n_tensors = gguf_get_n_tensors(ctx_gguf);
+            for (int64_t i = 0; i < n_tensors; ++i) {
+                const char * t_name_c = gguf_get_tensor_name(ctx_gguf, i);
+                const ggml_type t_type = gguf_get_tensor_type(ctx_gguf, i);
+                const char * type_name_c = ggml_type_name(t_type);
+
+                const std::string type_name = type_name_c ? type_name_c : "UNKNOWN";
+                tensor_types[type_name] += 1;
+
+                if (t_name_c) {
+                    const std::string name_l = to_lower(std::string(t_name_c));
+                    if (qkv["q"].is_null() && match_any(name_l, {"attn_q", "q_proj", "wq", "query"})) qkv["q"] = type_name;
+                    if (qkv["k"].is_null() && match_any(name_l, {"attn_k", "k_proj", "wk", "key"}))   qkv["k"] = type_name;
+                    if (qkv["v"].is_null() && match_any(name_l, {"attn_v", "v_proj", "wv", "value"})) qkv["v"] = type_name;
+                }
+            }
+
+            json tensor_types_json = json::object();
+            for (const auto & kv : tensor_types) {
+                tensor_types_json[kv.first] = kv.second;
+            }
+
+            gguf_free(ctx_gguf);
+            if (ctx) {
+                ggml_free(ctx);
+            }
+
+            res->ok({
+                {"ok", true},
+                {"filePath", file_path},
+                {"ggufVersion", gguf_version},
+                {"fileTypeId", file_type_id},
+                {"tensorTypes", tensor_types_json},
+                {"qkv", qkv},
+            });
+            return res;
+        } catch (const std::exception & e) {
+            res->ok({
+                {"ok", false},
+                {"error", e.what()},
+            });
+            return res;
+        }
     };
 
     this->get_metrics = [this](const server_http_req &) {
