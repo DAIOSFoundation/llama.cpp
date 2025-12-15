@@ -3751,13 +3751,6 @@ void server_routes::init_routes() {
             res->data = safe_json_to_str({{"ok", false}, {"error", "invalid_credentials"}});
             return res;
         }
-        if (!llm_server_auth::is_strong_password(password)) {
-            res->status = 401;
-            res->content_type = "application/json; charset=utf-8";
-            res->data = safe_json_to_str({{"ok", false}, {"error", "invalid_credentials"}});
-            return res;
-        }
-
         const std::string computed = llm_server_auth::derive_password_hash(rec.salt_hex, password, rec.iterations);
         if (computed != rec.hash_hex) {
             res->status = 401;
