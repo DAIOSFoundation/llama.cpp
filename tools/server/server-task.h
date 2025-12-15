@@ -441,6 +441,13 @@ struct server_task_result_metrics : server_task_result {
     uint64_t vram_used  = 0;
     uint64_t vram_free  = 0;
 
+    // Process / system information (best-effort, platform dependent)
+    uint64_t process_rss_bytes        = 0;
+    uint64_t system_memory_total_bytes = 0;
+    uint64_t system_memory_used_bytes  = 0;
+    uint32_t system_cpu_cores          = 0;
+    uint64_t process_cpu_time_us_total = 0;
+
     // while we can also use std::vector<server_slot> this requires copying the slot object which can be quite messy
     // therefore, we use json to temporarily store the slot.to_json() result
     json slots_data = json::array();

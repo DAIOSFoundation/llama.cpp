@@ -25,6 +25,17 @@
 #include <memory>
 #include <unordered_set>
 #include <filesystem>
+#include <thread>
+
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#include <sys/sysctl.h>
+#include <sys/resource.h>
+#elif defined(__linux__)
+#include <sys/resource.h>
+#include <sys/sysinfo.h>
+#include <unistd.h>
+#endif
 
 // fix problem with std::min and std::max
 #if defined(_WIN32)
@@ -1651,6 +1662,83 @@ struct server_context_impl {
                     }
 #endif
 
+                    // Process / system metrics (best-effort)
+                    {
+                        // cpu cores
+                        res->system_cpu_cores = (uint32_t) std::thread::hardware_concurrency();
+
+                        // cpu time (user+sys) in microseconds
+#if defined(__APPLE__) || defined(__linux__)
+                        {
+                            struct rusage ru;
+                            if (getrusage(RUSAGE_SELF, &ru) == 0) {
+                                const uint64_t u_us = (uint64_t) ru.ru_utime.tv_sec * 1000000ULL + (uint64_t) ru.ru_utime.tv_usec;
+                                const uint64_t s_us = (uint64_t) ru.ru_stime.tv_sec * 1000000ULL + (uint64_t) ru.ru_stime.tv_usec;
+                                res->process_cpu_time_us_total = u_us + s_us;
+                            }
+                        }
+#endif
+
+                        // process RSS and system memory
+#if defined(__APPLE__)
+                        {
+                            // process RSS
+                            mach_task_basic_info_data_t info;
+                            mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+                            if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t) &info, &count) == KERN_SUCCESS) {
+                                res->process_rss_bytes = (uint64_t) info.resident_size;
+                            }
+
+                            // total system memory
+                            uint64_t mem_total = 0;
+                            size_t len = sizeof(mem_total);
+                            if (sysctlbyname("hw.memsize", &mem_total, &len, nullptr, 0) == 0) {
+                                res->system_memory_total_bytes = mem_total;
+                            }
+
+                            // used system memory (approx)
+                            mach_port_t host_port = mach_host_self();
+                            vm_size_t page_size = 0;
+                            host_page_size(host_port, &page_size);
+
+                            vm_statistics64_data_t vmstat;
+                            mach_msg_type_number_t vmcount = HOST_VM_INFO64_COUNT;
+                            if (host_statistics64(host_port, HOST_VM_INFO64, (host_info64_t) &vmstat, &vmcount) == KERN_SUCCESS) {
+                                const uint64_t used_pages =
+                                    (uint64_t) vmstat.active_count +
+                                    (uint64_t) vmstat.inactive_count +
+                                    (uint64_t) vmstat.wire_count +
+                                    (uint64_t) vmstat.compressor_page_count;
+                                res->system_memory_used_bytes = used_pages * (uint64_t) page_size;
+                            }
+                        }
+#elif defined(__linux__)
+                        {
+                            // process RSS from /proc/self/statm
+                            {
+                                long page_size = sysconf(_SC_PAGESIZE);
+                                FILE * f = fopen("/proc/self/statm", "r");
+                                if (f) {
+                                    unsigned long size_pages = 0;
+                                    unsigned long rss_pages = 0;
+                                    if (fscanf(f, "%lu %lu", &size_pages, &rss_pages) == 2) {
+                                        res->process_rss_bytes = (uint64_t) rss_pages * (uint64_t) page_size;
+                                    }
+                                    fclose(f);
+                                }
+                            }
+
+                            struct sysinfo si;
+                            if (sysinfo(&si) == 0) {
+                                const uint64_t total = (uint64_t) si.totalram * (uint64_t) si.mem_unit;
+                                const uint64_t free  = (uint64_t) si.freeram  * (uint64_t) si.mem_unit;
+                                res->system_memory_total_bytes = total;
+                                res->system_memory_used_bytes  = total > free ? (total - free) : 0;
+                            }
+                        }
+#endif
+                    }
+
                     if (task.metrics_reset_bucket) {
                         metrics.reset_bucket();
                     }
@@ -3179,6 +3267,26 @@ void server_routes::init_routes() {
                     {"name",  "vram_free_bytes"},
                     {"help",  "Free VRAM in bytes."},
                     {"value",  (uint64_t) res_task->vram_free}
+            },{
+                    {"name",  "process_resident_memory_bytes"},
+                    {"help",  "Resident memory (RSS) of the llama-server process in bytes."},
+                    {"value",  (uint64_t) res_task->process_rss_bytes}
+            },{
+                    {"name",  "system_memory_total_bytes"},
+                    {"help",  "Total system memory in bytes (best-effort)."},
+                    {"value",  (uint64_t) res_task->system_memory_total_bytes}
+            },{
+                    {"name",  "system_memory_used_bytes"},
+                    {"help",  "Used system memory in bytes (best-effort)."},
+                    {"value",  (uint64_t) res_task->system_memory_used_bytes}
+            },{
+                    {"name",  "system_cpu_cores"},
+                    {"help",  "Number of CPU cores available on the server."},
+                    {"value",  (uint64_t) res_task->system_cpu_cores}
+            },{
+                    {"name",  "process_cpu_seconds_total"},
+                    {"help",  "Total CPU time (user+sys) of the llama-server process in seconds."},
+                    {"value",  (double) res_task->process_cpu_time_us_total / 1.e6}
             }}}
         };
 
