@@ -208,7 +208,7 @@ namespace llm_server_auth {
     }
 
     static bool is_strong_password(const std::string & s) {
-        if (s.size() < 12) return false;
+        if (s.size() < 8) return false;
         bool has_lower = false;
         bool has_upper = false;
         bool has_special = false;
