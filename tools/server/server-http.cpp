@@ -206,8 +206,11 @@ bool server_http_context::init(const common_params & params) {
         // If this is OPTIONS request, skip validation because browsers don't include Authorization header
         if (req.method == "OPTIONS") {
             res.set_header("Access-Control-Allow-Credentials", "true");
-            res.set_header("Access-Control-Allow-Methods",     "GET, POST");
-            res.set_header("Access-Control-Allow-Headers",     "*");
+            // Be explicit for better browser compatibility (wildcard headers are not consistently accepted,
+            // especially together with Allow-Credentials).
+            res.set_header("Access-Control-Allow-Methods",     "GET, POST, OPTIONS");
+            res.set_header("Access-Control-Allow-Headers",
+                           "Content-Type, Accept, Authorization, X-Api-Key, X-LLM-UI-Auth");
             res.set_content("", "text/html"); // blank response, no data
             return httplib::Server::HandlerResponse::Handled; // skip further processing
         }
