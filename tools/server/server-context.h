@@ -60,6 +60,7 @@ struct server_routes {
     // handlers using lambda function, so that they can capture `this` without `std::bind`
     server_http_context::handler_t get_health;
     server_http_context::handler_t get_metrics;
+    server_http_context::handler_t get_metrics_stream;
     server_http_context::handler_t get_slots;
     server_http_context::handler_t post_slots;
     server_http_context::handler_t get_props;

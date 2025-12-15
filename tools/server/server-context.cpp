@@ -3314,6 +3314,96 @@ void server_routes::init_routes() {
         return res;
     };
 
+    this->get_metrics_stream = [this](const server_http_req & req) {
+        auto res = std::make_unique<server_http_res>();
+        if (!params.endpoint_metrics) {
+            res->status = 400;
+            res->content_type = "application/json; charset=utf-8";
+            res->data = safe_json_to_str({{"error", format_error_response("This server does not support metrics endpoint. Start it with `--metrics`", ERROR_TYPE_NOT_SUPPORTED)}});
+            return res;
+        }
+
+        int interval_ms = 1000;
+        try {
+            const std::string v = req.get_param("interval_ms");
+            if (!v.empty()) {
+                interval_ms = std::stoi(v);
+            }
+        } catch (...) {
+            interval_ms = 1000;
+        }
+        interval_ms = std::max(250, std::min(10000, interval_ms));
+
+        auto should_stop = req.should_stop;
+
+        res->status = 200;
+        res->content_type = "text/event-stream";
+        res->headers["Cache-Control"] = "no-cache";
+        res->headers["Connection"] = "keep-alive";
+
+        struct state_t { bool first = true; };
+        auto state = std::make_shared<state_t>();
+
+        res->next = [this, state, interval_ms, should_stop](std::string & out) -> bool {
+            if (should_stop && should_stop()) {
+                return false;
+            }
+
+            if (state->first) {
+                state->first = false;
+                out = "retry: " + std::to_string(interval_ms) + "\n\n";
+                return true;
+            }
+
+            int task_id = ctx_server.queue_tasks.get_new_id();
+            {
+                server_task task(SERVER_TASK_TYPE_METRICS);
+                task.id = task_id;
+                ctx_server.queue_results.add_waiting_task_id(task_id);
+                ctx_server.queue_tasks.post(std::move(task), true); // high-priority task
+            }
+
+            server_task_result_ptr result = ctx_server.queue_results.recv(task_id);
+            ctx_server.queue_results.remove_waiting_task_id(task_id);
+
+            if (result->is_error()) {
+                json err = result->to_json();
+                out = "event: error\ndata: " + safe_json_to_str(err) + "\n\n";
+            } else {
+                auto res_task = dynamic_cast<server_task_result_metrics*>(result.get());
+                GGML_ASSERT(res_task != nullptr);
+
+                json snapshot = {
+                    {"ts_ms",          (uint64_t) ggml_time_ms()},
+                    {"vramTotal",      (uint64_t) res_task->vram_total},
+                    {"vramUsed",       (uint64_t) res_task->vram_used},
+                    {"sysMemTotal",    (uint64_t) res_task->system_memory_total_bytes},
+                    {"sysMemUsed",     (uint64_t) res_task->system_memory_used_bytes},
+                    {"cpuCores",       (uint64_t) res_task->system_cpu_cores},
+                    {"procCpuSec",     (double) res_task->process_cpu_time_us_total / 1.e6},
+                    {"tps",            (res_task->n_tokens_predicted ? 1.e3 / res_task->t_tokens_generation * res_task->n_tokens_predicted : 0.)},
+                    {"predictedTotal", (uint64_t) res_task->n_tokens_predicted_total},
+                };
+
+                out = "event: metrics\ndata: " + safe_json_to_str(snapshot) + "\n\n";
+            }
+
+            int slept = 0;
+            while (slept < interval_ms) {
+                if (should_stop && should_stop()) {
+                    return false;
+                }
+                const int step = std::min(100, interval_ms - slept);
+                std::this_thread::sleep_for(std::chrono::milliseconds(step));
+                slept += step;
+            }
+
+            return true;
+        };
+
+        return res;
+    };
+
     this->get_slots = [this](const server_http_req & req) {
         auto res = std::make_unique<server_res_generator>(ctx_server);
         if (!params.endpoint_slots) {

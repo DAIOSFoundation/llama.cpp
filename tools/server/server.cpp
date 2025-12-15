@@ -151,11 +151,14 @@ int main(int argc, char ** argv, char ** envp) {
         ctx_http.post("/models/status", ex_wrapper(models_routes->post_router_models_status));
         ctx_http.get ("/models/config", ex_wrapper(models_routes->get_router_models_config));
         ctx_http.post("/models/config", ex_wrapper(models_routes->post_router_models_config));
+        // stream metrics from child instance (SSE)
+        ctx_http.get ("/metrics/stream", ex_wrapper(models_routes->proxy_get));
     }
 
     ctx_http.get ("/health",              ex_wrapper(routes.get_health)); // public endpoint (no API key check)
     ctx_http.get ("/v1/health",           ex_wrapper(routes.get_health)); // public endpoint (no API key check)
     ctx_http.get ("/metrics",             ex_wrapper(routes.get_metrics));
+    ctx_http.get ("/metrics/stream",      ex_wrapper(routes.get_metrics_stream));
     ctx_http.get ("/props",               ex_wrapper(routes.get_props));
     ctx_http.post("/props",               ex_wrapper(routes.post_props));
     ctx_http.post("/api/show",            ex_wrapper(routes.get_api_show));
