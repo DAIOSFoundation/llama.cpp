@@ -159,6 +159,11 @@ int main(int argc, char ** argv, char ** envp) {
     ctx_http.get ("/metrics",             ex_wrapper(routes.get_metrics));
     ctx_http.get ("/metrics/stream",      ex_wrapper(routes.get_metrics_stream));
     ctx_http.get ("/props",               ex_wrapper(routes.get_props));
+    // Client UI auth
+    ctx_http.get ("/auth/status",         ex_wrapper(routes.get_auth_status));
+    ctx_http.post("/auth/setup",          ex_wrapper(routes.post_auth_setup));
+    ctx_http.post("/auth/login",          ex_wrapper(routes.post_auth_login));
+    ctx_http.post("/auth/logout",         ex_wrapper(routes.post_auth_logout));
     ctx_http.post("/props",               ex_wrapper(routes.post_props));
     ctx_http.post("/api/show",            ex_wrapper(routes.get_api_show));
     ctx_http.get ("/models",              ex_wrapper(routes.get_models)); // public endpoint (no API key check)

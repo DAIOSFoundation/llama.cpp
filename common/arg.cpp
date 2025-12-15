@@ -2609,6 +2609,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_MODELS_CONFIG"));
     add_opt(common_arg(
+        {"--auth-file"}, "PATH",
+        "path to server-side auth file for the client UI (default: ./user_pw.json)",
+        [](common_params & params, const std::string & value) {
+            params.auth_file = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_AUTH_FILE"));
+    add_opt(common_arg(
         {"--models-max"}, "N",
         string_format("for router server, maximum number of models to load simultaneously (default: %d, 0 = unlimited)", params.models_max),
         [](common_params & params, int value) {

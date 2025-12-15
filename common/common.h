@@ -490,6 +490,9 @@ struct common_params {
     int models_max = 4;             // maximum number of models to load simultaneously
     bool models_autoload = true;    // automatically load models when requested via the router server
 
+    // local UI auth (optional, used by client app)
+    std::string auth_file = "./user_pw.json"; // path to server-side auth file
+
     bool log_json = false;
 
     std::string slot_save_path;

@@ -26,6 +26,10 @@
 #include <unordered_set>
 #include <filesystem>
 #include <thread>
+#include <fstream>
+#include <random>
+#include <iomanip>
+#include <sstream>
 
 #if defined(__APPLE__)
 #include <mach/mach.h>
@@ -49,6 +53,230 @@
 using json = nlohmann::ordered_json;
 
 constexpr int HTTP_POLLING_SECONDS = 1;
+
+// --- Minimal salted iterative SHA-256 implementation (public domain style) ---
+// This is used only for local UI password storage (user_pw.json).
+namespace llm_server_auth {
+    struct sha256_ctx {
+        uint32_t state[8];
+        uint64_t bitlen;
+        uint8_t data[64];
+        size_t datalen;
+    };
+
+    static inline uint32_t rotr(uint32_t x, uint32_t n) { return (x >> n) | (x << (32 - n)); }
+    static inline uint32_t ch(uint32_t x, uint32_t y, uint32_t z) { return (x & y) ^ (~x & z); }
+    static inline uint32_t maj(uint32_t x, uint32_t y, uint32_t z) { return (x & y) ^ (x & z) ^ (y & z); }
+    static inline uint32_t ep0(uint32_t x) { return rotr(x, 2) ^ rotr(x, 13) ^ rotr(x, 22); }
+    static inline uint32_t ep1(uint32_t x) { return rotr(x, 6) ^ rotr(x, 11) ^ rotr(x, 25); }
+    static inline uint32_t sig0(uint32_t x) { return rotr(x, 7) ^ rotr(x, 18) ^ (x >> 3); }
+    static inline uint32_t sig1(uint32_t x) { return rotr(x, 17) ^ rotr(x, 19) ^ (x >> 10); }
+
+    static const uint32_t k[64] = {
+        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+    };
+
+    static void sha256_transform(sha256_ctx & ctx, const uint8_t data[]) {
+        uint32_t m[64];
+        for (int i = 0; i < 16; ++i) {
+            m[i] = (uint32_t)data[i * 4] << 24 |
+                   (uint32_t)data[i * 4 + 1] << 16 |
+                   (uint32_t)data[i * 4 + 2] << 8 |
+                   (uint32_t)data[i * 4 + 3];
+        }
+        for (int i = 16; i < 64; ++i) {
+            m[i] = sig1(m[i - 2]) + m[i - 7] + sig0(m[i - 15]) + m[i - 16];
+        }
+
+        uint32_t a = ctx.state[0];
+        uint32_t b = ctx.state[1];
+        uint32_t c = ctx.state[2];
+        uint32_t d = ctx.state[3];
+        uint32_t e = ctx.state[4];
+        uint32_t f = ctx.state[5];
+        uint32_t g = ctx.state[6];
+        uint32_t h = ctx.state[7];
+
+        for (int i = 0; i < 64; ++i) {
+            uint32_t t1 = h + ep1(e) + ch(e, f, g) + k[i] + m[i];
+            uint32_t t2 = ep0(a) + maj(a, b, c);
+            h = g;
+            g = f;
+            f = e;
+            e = d + t1;
+            d = c;
+            c = b;
+            b = a;
+            a = t1 + t2;
+        }
+
+        ctx.state[0] += a;
+        ctx.state[1] += b;
+        ctx.state[2] += c;
+        ctx.state[3] += d;
+        ctx.state[4] += e;
+        ctx.state[5] += f;
+        ctx.state[6] += g;
+        ctx.state[7] += h;
+    }
+
+    static void sha256_init(sha256_ctx & ctx) {
+        ctx.datalen = 0;
+        ctx.bitlen = 0;
+        ctx.state[0] = 0x6a09e667;
+        ctx.state[1] = 0xbb67ae85;
+        ctx.state[2] = 0x3c6ef372;
+        ctx.state[3] = 0xa54ff53a;
+        ctx.state[4] = 0x510e527f;
+        ctx.state[5] = 0x9b05688c;
+        ctx.state[6] = 0x1f83d9ab;
+        ctx.state[7] = 0x5be0cd19;
+    }
+
+    static void sha256_update(sha256_ctx & ctx, const uint8_t * data, size_t len) {
+        for (size_t i = 0; i < len; ++i) {
+            ctx.data[ctx.datalen] = data[i];
+            ctx.datalen++;
+            if (ctx.datalen == 64) {
+                sha256_transform(ctx, ctx.data);
+                ctx.bitlen += 512;
+                ctx.datalen = 0;
+            }
+        }
+    }
+
+    static void sha256_final(sha256_ctx & ctx, uint8_t hash[32]) {
+        size_t i = ctx.datalen;
+
+        // Pad whatever data is left in the buffer.
+        if (ctx.datalen < 56) {
+            ctx.data[i++] = 0x80;
+            while (i < 56) ctx.data[i++] = 0x00;
+        } else {
+            ctx.data[i++] = 0x80;
+            while (i < 64) ctx.data[i++] = 0x00;
+            sha256_transform(ctx, ctx.data);
+            memset(ctx.data, 0, 56);
+        }
+
+        ctx.bitlen += ctx.datalen * 8;
+        ctx.data[63] = (uint8_t)(ctx.bitlen);
+        ctx.data[62] = (uint8_t)(ctx.bitlen >> 8);
+        ctx.data[61] = (uint8_t)(ctx.bitlen >> 16);
+        ctx.data[60] = (uint8_t)(ctx.bitlen >> 24);
+        ctx.data[59] = (uint8_t)(ctx.bitlen >> 32);
+        ctx.data[58] = (uint8_t)(ctx.bitlen >> 40);
+        ctx.data[57] = (uint8_t)(ctx.bitlen >> 48);
+        ctx.data[56] = (uint8_t)(ctx.bitlen >> 56);
+        sha256_transform(ctx, ctx.data);
+
+        for (i = 0; i < 4; ++i) {
+            hash[i]      = (ctx.state[0] >> (24 - i * 8)) & 0xff;
+            hash[i + 4]  = (ctx.state[1] >> (24 - i * 8)) & 0xff;
+            hash[i + 8]  = (ctx.state[2] >> (24 - i * 8)) & 0xff;
+            hash[i + 12] = (ctx.state[3] >> (24 - i * 8)) & 0xff;
+            hash[i + 16] = (ctx.state[4] >> (24 - i * 8)) & 0xff;
+            hash[i + 20] = (ctx.state[5] >> (24 - i * 8)) & 0xff;
+            hash[i + 24] = (ctx.state[6] >> (24 - i * 8)) & 0xff;
+            hash[i + 28] = (ctx.state[7] >> (24 - i * 8)) & 0xff;
+        }
+    }
+
+    static std::string hex_encode(const uint8_t * data, size_t len) {
+        std::ostringstream oss;
+        oss << std::hex << std::setfill('0');
+        for (size_t i = 0; i < len; ++i) {
+            oss << std::setw(2) << (int) data[i];
+        }
+        return oss.str();
+    }
+
+    static std::string sha256_hex(const std::string & s) {
+        sha256_ctx ctx;
+        sha256_init(ctx);
+        sha256_update(ctx, reinterpret_cast<const uint8_t*>(s.data()), s.size());
+        uint8_t out[32];
+        sha256_final(ctx, out);
+        return hex_encode(out, 32);
+    }
+
+    static bool is_8_digits(const std::string & s) {
+        if (s.size() != 8) return false;
+        for (char c : s) if (c < '0' || c > '9') return false;
+        return true;
+    }
+
+    static std::string random_hex(size_t n_bytes) {
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<int> dis(0, 255);
+        std::vector<uint8_t> buf(n_bytes);
+        for (size_t i = 0; i < n_bytes; ++i) buf[i] = (uint8_t) dis(gen);
+        return hex_encode(buf.data(), buf.size());
+    }
+
+    static std::string derive_password_hash(const std::string & salt_hex, const std::string & password, int iterations) {
+        // iterative SHA-256: h0 = sha256(salt + password), hi = sha256(h_{i-1})
+        std::string h = sha256_hex(salt_hex + ":" + password);
+        for (int i = 1; i < iterations; ++i) {
+            h = sha256_hex(h);
+        }
+        return h;
+    }
+
+    struct auth_record {
+        std::string super_admin_id;
+        std::string salt_hex;
+        std::string hash_hex;
+        int iterations = 120000;
+    };
+
+    static bool load_auth_file(const std::string & path, auth_record & out) {
+        if (path.empty()) return false;
+        try {
+            std::ifstream in(path);
+            if (!in.good()) return false;
+            json j;
+            in >> j;
+            if (!j.is_object()) return false;
+            out.super_admin_id = j.value("superAdminId", "");
+            out.salt_hex = j.value("salt", "");
+            out.hash_hex = j.value("hash", "");
+            out.iterations = j.value("iterations", 120000);
+            return !out.super_admin_id.empty() && !out.salt_hex.empty() && !out.hash_hex.empty();
+        } catch (...) {
+            return false;
+        }
+    }
+
+    static void save_auth_file(const std::string & path, const auth_record & rec) {
+        json j = {
+            {"superAdminId", rec.super_admin_id},
+            {"salt", rec.salt_hex},
+            {"hash", rec.hash_hex},
+            {"iterations", rec.iterations},
+            {"algo", "sha256_iter"},
+        };
+        std::ofstream out(path);
+        out << j.dump(2) << "\n";
+    }
+
+    static std::string get_header_ci(const std::map<std::string, std::string> & headers, const std::string & key_lc) {
+        for (const auto & kv : headers) {
+            std::string k = kv.first;
+            std::transform(k.begin(), k.end(), k.begin(), [](unsigned char c){ return (char) std::tolower(c); });
+            if (k == key_lc) return kv.second;
+        }
+        return "";
+    }
+}
 
 // state diagram: https://github.com/ggml-org/llama.cpp/pull/9283
 enum slot_state {
@@ -3401,6 +3629,158 @@ void server_routes::init_routes() {
             return true;
         };
 
+        return res;
+    };
+
+    // --- Client UI Auth ---
+    // Design:
+    // - user_pw.json stores {superAdminId, salt, hash, iterations}
+    // - login creates an in-memory session token stored in a set
+    // - UI stores token client-side and sends it via header: X-LLM-UI-Auth
+    static std::mutex auth_mu;
+    static std::unordered_set<std::string> sessions;
+
+    auto is_authenticated = [&](const server_http_req & req) -> bool {
+        const std::string token = llm_server_auth::get_header_ci(req.headers, "x-llm-ui-auth");
+        if (token.empty()) return false;
+        std::lock_guard<std::mutex> lk(auth_mu);
+        return sessions.find(token) != sessions.end();
+    };
+
+    this->get_auth_status = [this, is_authenticated](const server_http_req & req) {
+        auto res = std::make_unique<server_http_res>();
+        llm_server_auth::auth_record rec;
+        const bool initialized = llm_server_auth::load_auth_file(params.auth_file, rec);
+        const bool authed = initialized ? is_authenticated(req) : false;
+        json out = {
+            {"initialized", initialized},
+            {"authenticated", authed},
+        };
+        if (initialized) {
+            out["superAdminId"] = rec.super_admin_id;
+        }
+        res->status = 200;
+        res->content_type = "application/json; charset=utf-8";
+        res->data = safe_json_to_str(out);
+        return res;
+    };
+
+    this->post_auth_setup = [this](const server_http_req & req) {
+        auto res = std::make_unique<server_http_res>();
+        llm_server_auth::auth_record rec_existing;
+        if (llm_server_auth::load_auth_file(params.auth_file, rec_existing)) {
+            res->status = 409;
+            res->content_type = "application/json; charset=utf-8";
+            res->data = safe_json_to_str({{"ok", false}, {"error", "already_initialized"}});
+            return res;
+        }
+
+        json body;
+        try { body = json::parse(req.body); } catch (...) {
+            res->status = 400;
+            res->content_type = "application/json; charset=utf-8";
+            res->data = safe_json_to_str({{"ok", false}, {"error", "invalid_json"}});
+            return res;
+        }
+
+        const std::string super_id = json_value(body, "superAdminId", std::string());
+        const std::string password = json_value(body, "password", std::string());
+        if (super_id.empty()) {
+            res->status = 400;
+            res->content_type = "application/json; charset=utf-8";
+            res->data = safe_json_to_str({{"ok", false}, {"error", "missing_superAdminId"}});
+            return res;
+        }
+        if (!llm_server_auth::is_8_digits(password)) {
+            res->status = 400;
+            res->content_type = "application/json; charset=utf-8";
+            res->data = safe_json_to_str({{"ok", false}, {"error", "password_must_be_8_digits"}});
+            return res;
+        }
+
+        llm_server_auth::auth_record rec;
+        rec.super_admin_id = super_id;
+        rec.salt_hex = llm_server_auth::random_hex(16);
+        rec.iterations = 120000;
+        rec.hash_hex = llm_server_auth::derive_password_hash(rec.salt_hex, password, rec.iterations);
+        try {
+            llm_server_auth::save_auth_file(params.auth_file, rec);
+        } catch (...) {
+            res->status = 500;
+            res->content_type = "application/json; charset=utf-8";
+            res->data = safe_json_to_str({{"ok", false}, {"error", "failed_to_write_auth_file"}});
+            return res;
+        }
+
+        res->status = 200;
+        res->content_type = "application/json; charset=utf-8";
+        res->data = safe_json_to_str({{"ok", true}, {"superAdminId", super_id}});
+        return res;
+    };
+
+    this->post_auth_login = [this](const server_http_req & req) {
+        auto res = std::make_unique<server_http_res>();
+        llm_server_auth::auth_record rec;
+        if (!llm_server_auth::load_auth_file(params.auth_file, rec)) {
+            res->status = 400;
+            res->content_type = "application/json; charset=utf-8";
+            res->data = safe_json_to_str({{"ok", false}, {"error", "not_initialized"}});
+            return res;
+        }
+
+        json body;
+        try { body = json::parse(req.body); } catch (...) {
+            res->status = 400;
+            res->content_type = "application/json; charset=utf-8";
+            res->data = safe_json_to_str({{"ok", false}, {"error", "invalid_json"}});
+            return res;
+        }
+
+        const std::string super_id = json_value(body, "superAdminId", std::string());
+        const std::string password = json_value(body, "password", std::string());
+        if (super_id != rec.super_admin_id) {
+            res->status = 401;
+            res->content_type = "application/json; charset=utf-8";
+            res->data = safe_json_to_str({{"ok", false}, {"error", "invalid_credentials"}});
+            return res;
+        }
+        if (!llm_server_auth::is_8_digits(password)) {
+            res->status = 401;
+            res->content_type = "application/json; charset=utf-8";
+            res->data = safe_json_to_str({{"ok", false}, {"error", "invalid_credentials"}});
+            return res;
+        }
+
+        const std::string computed = llm_server_auth::derive_password_hash(rec.salt_hex, password, rec.iterations);
+        if (computed != rec.hash_hex) {
+            res->status = 401;
+            res->content_type = "application/json; charset=utf-8";
+            res->data = safe_json_to_str({{"ok", false}, {"error", "invalid_credentials"}});
+            return res;
+        }
+
+        const std::string token = llm_server_auth::random_hex(24);
+        {
+            std::lock_guard<std::mutex> lk(auth_mu);
+            sessions.insert(token);
+        }
+
+        res->status = 200;
+        res->content_type = "application/json; charset=utf-8";
+        res->data = safe_json_to_str({{"ok", true}, {"token", token}});
+        return res;
+    };
+
+    this->post_auth_logout = [](const server_http_req & req) {
+        auto res = std::make_unique<server_http_res>();
+        const std::string token = llm_server_auth::get_header_ci(req.headers, "x-llm-ui-auth");
+        if (!token.empty()) {
+            std::lock_guard<std::mutex> lk(auth_mu);
+            sessions.erase(token);
+        }
+        res->status = 200;
+        res->content_type = "application/json; charset=utf-8";
+        res->data = safe_json_to_str({{"ok", true}});
         return res;
     };
 
