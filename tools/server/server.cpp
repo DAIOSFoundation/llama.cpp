@@ -124,6 +124,7 @@ int main(int argc, char ** argv, char ** envp) {
         // proxy handlers
         // note: routes.get_health stays the same
         routes.get_metrics                 = models_routes->proxy_get;
+        routes.get_metrics_stream          = models_routes->proxy_get;
         routes.post_props                  = models_routes->proxy_post;
         routes.get_api_show                = models_routes->proxy_get;
         routes.post_completions            = models_routes->proxy_post;
@@ -151,8 +152,6 @@ int main(int argc, char ** argv, char ** envp) {
         ctx_http.post("/models/status", ex_wrapper(models_routes->post_router_models_status));
         ctx_http.get ("/models/config", ex_wrapper(models_routes->get_router_models_config));
         ctx_http.post("/models/config", ex_wrapper(models_routes->post_router_models_config));
-        // stream metrics from child instance (SSE)
-        ctx_http.get ("/metrics/stream", ex_wrapper(models_routes->proxy_get));
     }
 
     ctx_http.get ("/health",              ex_wrapper(routes.get_health)); // public endpoint (no API key check)
