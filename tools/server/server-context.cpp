@@ -207,10 +207,17 @@ namespace llm_server_auth {
         return hex_encode(out, 32);
     }
 
-    static bool is_8_digits(const std::string & s) {
-        if (s.size() != 8) return false;
-        for (char c : s) if (c < '0' || c > '9') return false;
-        return true;
+    static bool is_strong_password(const std::string & s) {
+        if (s.size() < 12) return false;
+        bool has_lower = false;
+        bool has_upper = false;
+        bool has_special = false;
+        for (unsigned char c : s) {
+            if (std::islower(c)) has_lower = true;
+            else if (std::isupper(c)) has_upper = true;
+            else if (!std::isalnum(c)) has_special = true;
+        }
+        return has_lower && has_upper && has_special;
     }
 
     static std::string random_hex(size_t n_bytes) {
@@ -3691,10 +3698,10 @@ void server_routes::init_routes() {
             res->data = safe_json_to_str({{"ok", false}, {"error", "missing_superAdminId"}});
             return res;
         }
-        if (!llm_server_auth::is_8_digits(password)) {
+        if (!llm_server_auth::is_strong_password(password)) {
             res->status = 400;
             res->content_type = "application/json; charset=utf-8";
-            res->data = safe_json_to_str({{"ok", false}, {"error", "password_must_be_8_digits"}});
+            res->data = safe_json_to_str({{"ok", false}, {"error", "password_policy_violation"}});
             return res;
         }
 
@@ -3744,7 +3751,7 @@ void server_routes::init_routes() {
             res->data = safe_json_to_str({{"ok", false}, {"error", "invalid_credentials"}});
             return res;
         }
-        if (!llm_server_auth::is_8_digits(password)) {
+        if (!llm_server_auth::is_strong_password(password)) {
             res->status = 401;
             res->content_type = "application/json; charset=utf-8";
             res->data = safe_json_to_str({{"ok", false}, {"error", "invalid_credentials"}});
