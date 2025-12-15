@@ -102,6 +102,15 @@ private:
 
     server_presets presets;
 
+    // optional per-model JSON config loaded by router
+    std::string models_config_path;
+    json models_config = json::object(); // { "<model_id>": { "contextSize": 2048, "gpuLayers": 0, ... } }
+
+    void load_models_config();
+    void save_models_config() const;
+    void apply_models_config(server_model_meta & meta) const;
+    void set_models_config_for(const std::string & name, const json & cfg);
+
     void update_meta(const std::string & name, const server_model_meta & meta);
 
     // unload least recently used models if the limit is reached
@@ -164,6 +173,8 @@ struct server_models_routes {
     server_http_context::handler_t post_router_models_load;
     server_http_context::handler_t post_router_models_status;
     server_http_context::handler_t post_router_models_unload;
+    server_http_context::handler_t get_router_models_config;
+    server_http_context::handler_t post_router_models_config;
 };
 
 /**

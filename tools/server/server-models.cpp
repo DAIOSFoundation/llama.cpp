@@ -16,6 +16,7 @@
 #include <atomic>
 #include <chrono>
 #include <queue>
+#include <fstream>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -233,6 +234,7 @@ server_models::server_models(
         int argc,
         char ** argv,
         char ** envp) : base_params(params), presets(argc, argv, base_params, params.models_preset) {
+    models_config_path = params.models_config;
     for (int i = 0; i < argc; i++) {
         base_args.push_back(std::string(argv[i]));
     }
@@ -248,6 +250,60 @@ server_models::server_models(
         LOG_WRN("using original argv[0] as fallback: %s\n", base_args[0].c_str());
     }
     load_models();
+    load_models_config();
+}
+
+void server_models::load_models_config() {
+    if (models_config_path.empty()) {
+        models_config = json::object();
+        return;
+    }
+    try {
+        std::ifstream in(models_config_path);
+        if (!in.good()) {
+            models_config = json::object();
+            return;
+        }
+        in >> models_config;
+        if (!models_config.is_object()) {
+            models_config = json::object();
+        }
+    } catch (...) {
+        models_config = json::object();
+    }
+}
+
+void server_models::save_models_config() const {
+    if (models_config_path.empty()) return;
+    try {
+        std::ofstream out(models_config_path);
+        out << models_config.dump(2);
+    } catch (...) {
+        // ignore
+    }
+}
+
+void server_models::set_models_config_for(const std::string & name, const json & cfg) {
+    if (!models_config.is_object()) {
+        models_config = json::object();
+    }
+    models_config[name] = cfg;
+    save_models_config();
+}
+
+void server_models::apply_models_config(server_model_meta & meta) const {
+    if (!models_config_path.empty() && models_config.is_object() && models_config.contains(meta.name) && models_config.at(meta.name).is_object()) {
+        const json & cfg = models_config.at(meta.name);
+        // Apply only safe, load-time args (startup args)
+        if (cfg.contains("contextSize") && cfg.at("contextSize").is_number_integer()) {
+            meta.args.push_back("-c");
+            meta.args.push_back(std::to_string((int) cfg.at("contextSize")));
+        }
+        if (cfg.contains("gpuLayers") && cfg.at("gpuLayers").is_number_integer()) {
+            meta.args.push_back("-ngl");
+            meta.args.push_back(std::to_string((int) cfg.at("gpuLayers")));
+        }
+    }
 }
 
 void server_models::add_model(server_model_meta && meta) {
@@ -255,6 +311,7 @@ void server_models::add_model(server_model_meta && meta) {
         throw std::runtime_error(string_format("model '%s' appears multiple times", meta.name.c_str()));
     }
     presets.render_args(meta); // populate meta.args
+    apply_models_config(meta);
     std::string name = meta.name;
     mapping[name] = instance_t{
         /* subproc */ std::make_shared<subprocess_s>(),
@@ -519,6 +576,7 @@ void server_models::load(const std::string & name) {
         SRV_INF("spawning server instance with name=%s on port %d\n", inst.meta.name.c_str(), inst.meta.port);
 
         presets.render_args(inst.meta); // update meta.args
+        apply_models_config(inst.meta);
 
         std::vector<std::string> child_args = inst.meta.args; // copy
         std::vector<std::string> child_env  = base_env; // copy
@@ -929,6 +987,37 @@ void server_models_routes::init_routes() {
             return res;
         }
         models.unload(name);
+        res_ok(res, {{"success", true}});
+        return res;
+    };
+
+    this->get_router_models_config = [this](const server_http_req &) {
+        auto res = std::make_unique<server_http_res>();
+        res_ok(res, {
+            {"config_path", params.models_config},
+            {"models_config", models.models_config},
+        });
+        return res;
+    };
+
+    this->post_router_models_config = [this](const server_http_req & req) {
+        auto res = std::make_unique<server_http_res>();
+        json body = json::parse(req.body);
+        std::string name = json_value(body, "model", std::string());
+        if (name.empty()) {
+            res_err(res, format_error_response("model is missing", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        if (!models.has_model(name)) {
+            res_err(res, format_error_response("model not found", ERROR_TYPE_NOT_FOUND));
+            return res;
+        }
+        json cfg = body.contains("config") ? body["config"] : json::object();
+        if (!cfg.is_object()) {
+            res_err(res, format_error_response("config must be an object", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        models.set_models_config_for(name, cfg);
         res_ok(res, {{"success", true}});
         return res;
     };

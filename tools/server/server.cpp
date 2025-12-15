@@ -149,6 +149,8 @@ int main(int argc, char ** argv, char ** envp) {
         ctx_http.post("/models/load",   ex_wrapper(models_routes->post_router_models_load));
         ctx_http.post("/models/unload", ex_wrapper(models_routes->post_router_models_unload));
         ctx_http.post("/models/status", ex_wrapper(models_routes->post_router_models_status));
+        ctx_http.get ("/models/config", ex_wrapper(models_routes->get_router_models_config));
+        ctx_http.post("/models/config", ex_wrapper(models_routes->post_router_models_config));
     }
 
     ctx_http.get ("/health",              ex_wrapper(routes.get_health)); // public endpoint (no API key check)
