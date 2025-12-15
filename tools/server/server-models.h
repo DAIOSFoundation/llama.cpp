@@ -109,7 +109,6 @@ private:
     void load_models_config();
     void save_models_config() const;
     void apply_models_config(server_model_meta & meta) const;
-    void set_models_config_for(const std::string & name, const json & cfg);
 
     void update_meta(const std::string & name, const server_model_meta & meta);
 
@@ -121,6 +120,10 @@ private:
 
 public:
     server_models(const common_params & params, int argc, char ** argv, char ** envp);
+
+    // router-only config helpers
+    json get_models_config() const { return models_config; }
+    void set_models_config_for(const std::string & name, const json & cfg);
 
     void load_models();
 

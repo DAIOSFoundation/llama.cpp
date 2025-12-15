@@ -163,6 +163,7 @@ server_presets::server_presets(int argc, char ** argv, common_params & base_para
             env == "LLAMA_ARG_MODELS_DIR" ||
             env == "LLAMA_ARG_MODELS_MAX" ||
             env == "LLAMA_ARG_MODELS_PRESET" ||
+            env == "LLAMA_ARG_MODELS_CONFIG" ||
             env == "LLAMA_ARG_MODEL" ||
             env == "LLAMA_ARG_MMPROJ" ||
             env == "LLAMA_ARG_HF_REPO" ||
@@ -995,14 +996,20 @@ void server_models_routes::init_routes() {
         auto res = std::make_unique<server_http_res>();
         res_ok(res, {
             {"config_path", params.models_config},
-            {"models_config", models.models_config},
+            {"models_config", models.get_models_config()},
         });
         return res;
     };
 
     this->post_router_models_config = [this](const server_http_req & req) {
         auto res = std::make_unique<server_http_res>();
-        json body = json::parse(req.body);
+        json body;
+        try {
+            body = json::parse(req.body);
+        } catch (...) {
+            res_err(res, format_error_response("invalid JSON body", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
         std::string name = json_value(body, "model", std::string());
         if (name.empty()) {
             res_err(res, format_error_response("model is missing", ERROR_TYPE_INVALID_REQUEST));
