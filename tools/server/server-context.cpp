@@ -30,6 +30,8 @@
 #include <random>
 #include <iomanip>
 #include <sstream>
+#include <atomic>
+#include <mutex>
 
 #if defined(__APPLE__)
 #include <mach/mach.h>
@@ -807,6 +809,12 @@ struct server_context_impl {
     common_chat_templates_ptr chat_templates;
     oaicompat_parser_options  oai_parser_opt;
 
+    // Model loading progress tracking
+    std::atomic<float> loading_progress{0.0f};
+    std::atomic<bool> is_loading{false};
+    std::atomic<float> last_broadcast_progress{-1.0f};
+    std::mutex progress_mutex;
+
     ~server_context_impl() {
         mtmd_free(mctx);
 
@@ -831,7 +839,32 @@ struct server_context_impl {
     bool load_model(const common_params & params) {
         SRV_INF("loading model '%s'\n", params.model.path.c_str());
 
+        // Reset loading state
+        is_loading = true;
+        loading_progress = 0.0f;
+        last_broadcast_progress = -1.0f;
+
         params_base = params;
+
+        // Set up progress callback
+        params_base.load_progress_callback_user_data = this;
+        params_base.load_progress_callback = [](float progress, void * user_data) {
+            server_context_impl * impl = static_cast<server_context_impl *>(user_data);
+            float progress_percent = progress * 100.0f;
+            impl->loading_progress = progress_percent; // Convert to percentage
+            
+            // Broadcast progress to log stream (every 5% or at milestones)
+            float last_broadcast = impl->last_broadcast_progress.load();
+            if (progress_percent - last_broadcast >= 5.0f || progress >= 1.0f) {
+                impl->last_broadcast_progress = progress_percent;
+                int bar_length = 30;
+                int filled = static_cast<int>(bar_length * progress);
+                std::string bar = std::string(filled, '█') + std::string(bar_length - filled, '░');
+                SRV_INF("Loading progress: [%s] %.1f%%\n", bar.c_str(), progress_percent);
+            }
+            
+            return true;
+        };
 
         llama_init = common_init_from_params(params_base);
 
@@ -840,8 +873,14 @@ struct server_context_impl {
 
         if (model == nullptr) {
             SRV_ERR("failed to load model, '%s'\n", params_base.model.path.c_str());
+            is_loading = false;
+            loading_progress = 0.0f;
             return false;
         }
+
+        // Model loaded successfully
+        is_loading = false;
+        loading_progress = 100.0f;
 
         vocab = llama_model_get_vocab(model);
 
@@ -2119,7 +2158,7 @@ struct server_context_impl {
             }
 
             if (all_idle) {
-                SRV_INF("%s", "all slots are idle\n");
+                // SRV_INF("%s", "all slots are idle\n"); // 로그 제거됨
 
                 return;
             }

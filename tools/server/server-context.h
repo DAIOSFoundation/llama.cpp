@@ -59,6 +59,7 @@ struct server_routes {
     void init_routes();
     // handlers using lambda function, so that they can capture `this` without `std::bind`
     server_http_context::handler_t get_health;
+    server_http_context::handler_t get_loading_progress;
     server_http_context::handler_t get_metrics;
     server_http_context::handler_t get_metrics_stream;
     server_http_context::handler_t get_slots;

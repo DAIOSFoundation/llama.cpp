@@ -156,6 +156,7 @@ int main(int argc, char ** argv, char ** envp) {
 
     ctx_http.get ("/health",              ex_wrapper(routes.get_health)); // public endpoint (no API key check)
     ctx_http.get ("/v1/health",           ex_wrapper(routes.get_health)); // public endpoint (no API key check)
+    ctx_http.get ("/loading-progress",    ex_wrapper(routes.get_loading_progress)); // public endpoint (no API key check)
     ctx_http.get ("/metrics",             ex_wrapper(routes.get_metrics));
     ctx_http.get ("/metrics/stream",      ex_wrapper(routes.get_metrics_stream));
     ctx_http.get ("/props",               ex_wrapper(routes.get_props));
